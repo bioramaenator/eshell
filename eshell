@@ -1,0 +1,96 @@
+#!/usr/bin/env escript
+
+-record(settings, {
+          verbose = false,
+          node = 'eshell',
+          remote_node,
+          cookie = []
+        }).
+
+datetime_string() ->
+    {Y, M, D} = date(),
+    {H, Min, S} = time(),
+    lists:flatten(io_lib:format("~w/~w/~w (~w:~w:~w)", [Y, M, D, H, Min, S])).
+
+log(Level, Format, Args) ->
+    log(Level, Format, Args, #settings{}).
+
+log(info, Format, Args, #settings{verbose = true}) ->
+    do_log(info, Format, Args);
+log(warning, Format, Args, #settings{verbose = true}) ->
+    do_log(warning, Format, Args);
+log(error, Format, Args, _) ->
+    do_log(error, Format, Args);
+log(Level, _, _, _) ->
+    if
+        Level =/= info andalso Level =/= warning ->
+            throw({bad_log_level, Level});
+        true ->
+            ok
+    end.
+
+do_log(Level, Format, Args) ->
+    io:format("[eshell-~s] ~s# " ++ Format, [Level, datetime_string() | Args]).
+
+main(Args) ->
+    try main_impl(Args) of
+        _ ->
+            ok
+    catch _ : Reason ->
+            log(error, "exit ~p~n", [Reason])
+    end.
+
+main_impl(Args) ->
+    Settings = read_settings(Args),
+    log(info, "command line arguments: ~p~n", [Args], Settings),
+    log(info, "settings: ~p~n", [Settings], Settings),
+
+    set_node(Settings#settings.node),
+    set_cookie(Settings#settings.cookie),
+
+    log(info, "node: ~p~n", [node()], Settings),
+    log(info, "cookie: ~p~n", [erlang:get_cookie()], Settings),
+
+    ping(Settings),
+
+    rpc_loop(Settings).
+
+rpc_loop(_) ->
+    ok.
+
+read_settings(Args) ->
+    read_settings(Args, #settings{}).
+
+read_settings([], AccOut) ->
+    AccOut;
+read_settings([Verbose | Tail], AccIn) when Verbose =:= "-v" orelse Verbose =:= "--verbose" ->
+    read_settings(Tail, AccIn#settings{verbose = true});
+read_settings(["--name", Value | Tail], AccIn) ->
+    read_settings(Tail, AccIn#settings{node = list_to_atom(Value)});
+read_settings([Remote, Node | Tail], AccIn) ->
+    case Remote of
+        "--remote" ->
+            read_settings(Tail, AccIn#settings{remote_node = list_to_atom(Node)});
+        _ ->
+            throw({unknown_param, Remote})
+    end;
+read_settings([X | _], _) ->
+    throw({unknown_param, X}).
+
+set_node(NodeName) ->
+    {ok, _} = net_kernel:start([NodeName]).
+
+set_cookie([]) ->
+    ok;
+set_cookie(Cookie) when is_atom(Cookie) ->
+    true = erlang:set_cookie(node(), Cookie),
+    ok.
+
+ping(Settings = #settings{remote_node = Remote}) ->
+    case net_adm:ping(Remote) of
+        pong ->
+            log(info, "ping ~p - ok~n", [Remote], Settings),
+            ok;
+        pang ->
+            throw({ping_error, Remote})
+    end.
